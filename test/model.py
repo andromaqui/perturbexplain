@@ -1,33 +1,53 @@
 from ortools.sat.python import cp_model
 from itertools import combinations
+from model_data import make_problem_data
 
 # 7 days
 # labs start from 8AM to 5PM
 # labs last only 1 hour
 # there is an old schedule and you should try to change a given time
 # 0, 60, 120, 180, 240
-# TODO: visual representation of the model
-# TODO: custom to change
-# TODO: custom durations
 # TODO: preferences
 # TODO: TESTS
 # TODO: demonstrators
-# TODO: if max_perturbations is not None:
 # TODO: room distance
-# TODO: model.Add(starttime_vars[lab_i] + lab_duration[lab_i] <= starttime_vars[lab_j]).OnlyEnforceIf([same, before])
-# model.Add(starttime_vars[lab_j] + lab_duration[lab_j] <= starttime_vars[lab_i]).OnlyEnforceIf([same, before.Not()])
-# 5 minutes break
 
 
-def build_model(data):
+# TODO: objective function
+# preferences of dozierenden
+# preferences of demonstrators ??
+# maximize the time a lecturers spends in uni in 1 day(
+# maximize the time a student spends in uni in 1 day
+# use resources in the most optimal way ???
+# maximize the amount of labs which are assigned? can some be unassigned?
+
+# plot tests on small dataset
+# plot test on big dataset
+
+
+
+CLASS_DURATION = 60  # minutes
+NUM_TIME_SLOTS = 9 * 60
+NUM_DAYS = 7
+NUM_ROOMS = 3
+OLDPLAN = {
+    "labs": {
+        "machinelearning": {"day": 1, "start": 60, "room": "GPUA", "locked": False},
+        "computervision": {"day": 1, "start": 180, "room": "GPUB", "locked": True},
+        "cloudcomputing": {"day": 2, "start": 120, "room": "LINUX", "locked": True},
+        "workshopinai": {"day": 5, "start": 240, "room": "GPUA", "locked": False},
+    }
+}
+TOCHANGE = "workshopinai"
+#NUM_PERTURBATIONS = None
+
+
+def build_model(data, max_perturbations=None):
     model = cp_model.CpModel()
 
-    max_perturbations = data["NUM_PERTURBATIONS"]
     NUM_TIME_SLOTS = data["NUM_TIME_SLOTS"]
     NUM_DAYS = data["NUM_DAYS"]
     NUM_ROOMS = data["NUM_ROOMS"]
-    OLDPLAN = data["OLD_PLAN"]
-    TOCHANGE = data["TO_CHANGE"]
 
     lab_duration = data["lab_duration"]
     lab_lecturer = data["lab_lecturer"]
@@ -54,26 +74,12 @@ def build_model(data):
     linux_vars = []
 
     for lab in labs:
-        # Create a variable for the start time (in minutes after 8AM).
-        # Range: 0 to (NUM_TIME_SLOTS - lab_duration[lab])
-        # - Lower bound (0): earliest start is 8:00AM
-        # - Upper bound: latest start that allows the lab to finish by 5PM
-        #   Example: if NUM_TIME_SLOTS=540 and lab_duration=60, then max start=480
-        #   Starting at minute 480 (4:00PM) + 60 min duration = 540 (5:00PM)
-        #   Starting at minute 481 would end at 5:01PM  (past closing time)
         startminute_var = model.NewIntVar(0, NUM_TIME_SLOTS - lab_duration[lab], "time_" + lab)
         starttime_vars[lab] = startminute_var
 
-        '''
         # Restrict to 15-minute intervals: 0, 15, 30, 45, 60, 75, 90, ...
         # (8:00, 8:15, 8:30, 8:45, 9:00, 9:15, 9:30, ...)
         allowed_starts = list(range(0, NUM_TIME_SLOTS - lab_duration[lab] + 1, 15))
-        model.AddAllowedAssignments([startminute_var], [(s,) for s in allowed_starts])
-        '''
-
-        # Restrict to hourly intervals: 0, 60, 120, 180, 240, 300, 360, 420, 480
-        # (8:00, 9:00, 10:00, 11:00, 12:00, 1:00, 2:00, 3:00, 4:00)
-        allowed_starts = list(range(0, NUM_TIME_SLOTS - lab_duration[lab] + 1, 60))
         model.AddAllowedAssignments([startminute_var], [(s,) for s in allowed_starts])
 
         day_vars[lab] = model.NewIntVar(0, len(day_slots) - 1, "day_" + lab)
@@ -85,8 +91,6 @@ def build_model(data):
         if lab in lab_day:
             model.AddAllowedAssignments([day_vars[lab]], [(d,) for d in lab_day[lab]])
 
-        # take into account which lecturer teaches this lab
-        # and if there times they cant teach
         lec = lab_lecturer[lab]
         if lec in lecturer_forbidden:
             for day, slot in lecturer_forbidden[lec]:
@@ -96,7 +100,6 @@ def build_model(data):
                 else:
                     model.AddForbiddenAssignments([day_vars[lab], starttime_vars[lab]], [(day, slot)])
 
-        # take into account in which rooms the labs can be scheduled
         if lab in rooms_to_classes["GPUA"] or lab in rooms_to_classes["GPUB"]:
             room_vars[lab] = model.NewIntVar(0, len(room_slots) - 2, "room_" + lab)
 
@@ -105,26 +108,34 @@ def build_model(data):
 
             model.Add(room_vars[lab] == GPUA).OnlyEnforceIf(is_on_GPUA[lab])
             model.Add(room_vars[lab] == GPUB).OnlyEnforceIf(is_on_GPUB[lab])
-
-            # if a room can be scheduled on more than one rooms
-            # schedule it only once, not multiple times in each room
             model.Add(is_on_GPUA[lab] + is_on_GPUB[lab] == 1)
         else:
             room_vars[lab] = model.NewIntVar(LINUX, LINUX, "room_" + lab)
             linux_vars.append(starttime_vars[lab])
 
-
-    if max_perturbations is not None:
-        apply_old_plan_constraints_up_to_n_changes(
+        apply_old_plan_constraints(
             model,
-            labs,
+            lab,
             starttime_vars,
             day_vars,
             room_vars,
             OLDPLAN,
-            TOCHANGE,
-            max_perturbations
+            TOCHANGE
         )
+
+    '''
+        if max_perturbations is not None:
+            apply_old_plan_constraints_up_to_n_changes(
+                model,
+                labs,
+                time_vars,
+                day_vars,
+                room_vars,
+                OLDPLAN,
+                TOCHANGE,
+                max_perturbations
+            )
+    '''
 
     # 1 hour after the other
     for i in range(len(labs)):
@@ -142,8 +153,6 @@ def build_model(data):
 
     labStudentIntersections = find_lab_studentintersections(data)
 
-    # if students are part of many labs
-    # dont schedule these labs at the same time
     for lab in labStudentIntersections:
         for other_lab in labStudentIntersections[lab]:
             if lab >= other_lab:
@@ -151,7 +160,7 @@ def build_model(data):
 
             b = model.NewBoolVar(f"no_overlap_{lab}_{other_lab}")
             model.Add(slot_vars[lab] + lab_duration[lab] <= slot_vars[other_lab]).OnlyEnforceIf(b)
-            model.Add(slot_vars[other_lab] + lab_duration[other_lab] <= slot_vars[lab]).OnlyEnforceIf(b.Not())
+            model.Add(slot_vars[other_lab] + lab_duration[other_lab]<= slot_vars[lab]).OnlyEnforceIf(b.Not())
 
     return model, starttime_vars, day_vars, room_vars
 
@@ -170,13 +179,13 @@ def find_lab_studentintersections(data):
 
 
 def apply_old_plan_constraints(
-    model,
-    lab,
-    time_vars,
-    day_vars,
-    room_vars,
-    OLDPLAN,
-    TOCHANGE,
+        model,
+        lab,
+        time_vars,
+        day_vars,
+        room_vars,
+        OLDPLAN,
+        TOCHANGE,
 ):
     oldLabData = OLDPLAN["labs"][lab]
 
@@ -199,14 +208,14 @@ def apply_old_plan_constraints(
 
 
 def apply_old_plan_constraints_up_to_n_changes(
-    model,
-    labs,
-    time_vars,
-    day_vars,
-    room_vars,
-    OLDPLAN,
-    TOCHANGE,
-    max_perturbations
+        model,
+        labs,
+        time_vars,
+        day_vars,
+        room_vars,
+        OLDPLAN,
+        TOCHANGE,
+        max_perturbations
 ):
     changed = {}
 
@@ -236,3 +245,62 @@ def apply_old_plan_constraints_up_to_n_changes(
 
     # "at most one lab may differ"
     model.Add(sum(changed[lab] for lab in labs) <= max_perturbations + 1)
+
+
+def solve_show_all(data):
+    model, time_vars, day_vars, room_vars = build_model(data, None)
+
+    # TODO:
+    class Movements(cp_model.CpSolverSolutionCallback):
+        def __init__(self, day_vars, time_vars, room_vars, lab_name, limit=None):
+            super().__init__()
+            self.day_vars = day_vars
+            self.time_vars = time_vars
+            self.room_vars = room_vars
+            self.lab_name = lab_name
+            self.limit = limit
+            self.count = 0
+            # TODO: what is happening here?
+            self.positions = set()
+
+        def OnSolutionCallback(self):
+            d = self.Value(self.day_vars[self.lab_name])
+            t = self.Value(self.time_vars[self.lab_name])
+            r_idx = self.Value(self.room_vars[self.lab_name])
+
+            self.positions.add((d, t, r_idx, self.lab_name))
+            self.count += 1
+
+            if self.limit is not None and self.count >= self.limit:
+                self.StopSearch()
+
+    solver = cp_model.CpSolver()
+    callback = Movements(day_vars, time_vars, room_vars, TOCHANGE)
+    solver.SearchForAllSolutions(model, callback)
+
+    if not callback.positions:
+        print("No feasible schedule / movement found for", TOCHANGE)
+        return
+    else:
+        # TODO: fstrings
+        print("You can schedule " +  TOCHANGE + " on the following times:")
+        print("")
+
+        for row in callback.positions:
+            day = row[0]
+            slot = row[1]
+            room_idx = row[2]
+
+            start = 8 * 60 + slot
+            end = start + CLASS_DURATION
+            room_name = ["GPUA", "GPUB", "LINUX"][room_idx]
+
+            print(f"day: {day}, "
+                  f"slot: {slot}, "
+                  f"start_time: {start // 60:02d}:{start % 60:02d} "
+                  f"room: {room_name}"
+                  )
+
+if __name__ == "__main__":
+    data = make_problem_data()
+    solve_show_all(data)
